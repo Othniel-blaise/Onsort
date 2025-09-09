@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
-import 'package:onsortx/screens/Home_Screen.dart';
-import 'package:onsortx/screens/SingnUp_Screen.dart';
+import 'package:onsortx/screens/SingIn_screen.dart';
 import 'package:onsortx/services/api_service.dart';
 
-class SignInScreen extends StatefulWidget {
+class SignUpScreen extends StatefulWidget {
   @override
-  _SignInScreenState createState() => _SignInScreenState();
+  _SignUpScreenState createState() => _SignUpScreenState();
 }
 
-class _SignInScreenState extends State<SignInScreen> {
+class _SignUpScreenState extends State<SignUpScreen> {
+  final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _isPasswordVisible = false;
   bool _isLoading = false;
@@ -19,11 +20,12 @@ class _SignInScreenState extends State<SignInScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFFAF8F5),
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              const SizedBox(height: 40),
+              
               // Logo
               Container(
                 width: 60,
@@ -38,16 +40,34 @@ class _SignInScreenState extends State<SignInScreen> {
               
               // Titre
               const Text(
-                'CONNEXION',
+                'INSCRIPTION',
                 style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: 2),
               ),
               
               const SizedBox(height: 40),
               
+              // Nom complet
+              _buildTextField(
+                controller: _fullNameController,
+                hintText: 'Nom complet',
+                enabled: !_isLoading,
+              ),
+              
+              const SizedBox(height: 16),
+              
               // Email
               _buildTextField(
                 controller: _emailController,
                 hintText: 'Email',
+                enabled: !_isLoading,
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // Téléphone (optionnel)
+              _buildTextField(
+                controller: _phoneController,
+                hintText: 'Téléphone (optionnel)',
                 enabled: !_isLoading,
               ),
               
@@ -70,32 +90,66 @@ class _SignInScreenState extends State<SignInScreen> {
               
               const SizedBox(height: 30),
               
-              // Bouton Connexion
+              // Bouton Inscription
               SizedBox(
                 width: double.infinity,
                 height: 54,
                 child: ElevatedButton(
-                  onPressed: _isLoading ? null : _handleLogin,
+                  onPressed: _isLoading ? null : _handleSignUp,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFE6B800),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                   child: _isLoading 
                     ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
-                    : const Text('SE CONNECTER', style: TextStyle(fontSize: 16, color: Colors.white)),
+                    : const Text('S\'INSCRIRE', style: TextStyle(fontSize: 16, color: Colors.white)),
                 ),
               ),
               
               const SizedBox(height: 20),
               
-              // Lien inscription
+              // Inscription via réseaux sociaux
+              const Text("ou s'inscrire via :", style: TextStyle(color: Colors.black54)),
+              const SizedBox(height: 16),
+              
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showSnackBar('Fonctionnalité bientôt disponible'),
+                      icon: const Icon(Icons.g_mobiledata, color: Colors.red),
+                      label: const Text("Google"),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _showSnackBar('Fonctionnalité bientôt disponible'),
+                      icon: const Icon(Icons.facebook, color: Colors.blue),
+                      label: const Text("Facebook"),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              
+              const SizedBox(height: 30),
+              
+              // Lien connexion
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text("Pas de compte ? "),
+                  const Text("Déjà un compte ? "),
                   TextButton(
-                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => SignUpScreen())),
-                    child: const Text("S'INSCRIRE", style: TextStyle(color: Color(0xFFE6B800))),
+                    onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => SignInScreen())),
+                    child: const Text("SE CONNECTER", style: TextStyle(color: Color(0xFFE6B800))),
                   ),
                 ],
               ),
@@ -133,24 +187,35 @@ class _SignInScreenState extends State<SignInScreen> {
     );
   }
 
-  Future<void> _handleLogin() async {
-    if (_emailController.text.trim().isEmpty || _passwordController.text.isEmpty) {
-      _showSnackBar('Veuillez remplir tous les champs');
+  Future<void> _handleSignUp() async {
+    if (_fullNameController.text.trim().isEmpty || 
+        _emailController.text.trim().isEmpty || 
+        _passwordController.text.isEmpty) {
+      _showSnackBar('Veuillez remplir tous les champs obligatoires');
+      return;
+    }
+
+    if (_passwordController.text.length < 6) {
+      _showSnackBar('Le mot de passe doit contenir au moins 6 caractères');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      final result = await ApiService.loginUser(
+      final result = await ApiService.registerUser(
+        fullName: _fullNameController.text.trim(),
         email: _emailController.text.trim(),
         password: _passwordController.text,
+        phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
       );
 
       if (result['success']) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => HomeScreen()));
+        _showSnackBar('Inscription réussie !');
+        // Retourner à l'écran de connexion après inscription réussie
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => SignInScreen()));
       } else {
-        _showSnackBar(result['message'] ?? 'Erreur de connexion');
+        _showSnackBar(result['message'] ?? 'Erreur lors de l\'inscription');
       }
     } catch (e) {
       _showSnackBar('Erreur : $e');
@@ -167,7 +232,9 @@ class _SignInScreenState extends State<SignInScreen> {
 
   @override
   void dispose() {
+    _fullNameController.dispose();
     _emailController.dispose();
+    _phoneController.dispose();
     _passwordController.dispose();
     super.dispose();
   }

@@ -1,11 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as Math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'dart:async';
-import 'dart:math' as Math;
+
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -15,11 +16,12 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   LatLng? currentPosition;
-  final MapController _mapController = MapController();
+  late final MapController _mapController;
   bool isLoading = true;
   String? errorMessage;
-  
-  // Pour le trajet
+  bool isMapReady = false; // Important : état de la carte
+
+  // Navigation
   List<LatLng> routePoints = [];
   bool isNavigating = false;
   LatLng? destination;
@@ -32,42 +34,18 @@ class _MapScreenState extends State<MapScreen> {
 
   // Établissements fictifs
   final List<Map<String, dynamic>> establishments = [
-    {
-      'name': 'Restaurant Le Palmier',
-      'position': const LatLng(5.3364, -4.0267),
-      'icon': Icons.restaurant,
-      'color': Colors.red,
-    },
-    {
-      'name': 'Hôtel Ivoire',
-      'position': const LatLng(5.3200, -4.0100),
-      'icon': Icons.hotel,
-      'color': Colors.blue,
-    },
-    {
-      'name': 'Supermarché Hayat',
-      'position': const LatLng(5.3400, -4.0350),
-      'icon': Icons.store,
-      'color': Colors.green,
-    },
-    {
-      'name': 'Café des Arts',
-      'position': const LatLng(5.3500, -4.0200),
-      'icon': Icons.local_cafe,
-      'color': Colors.brown,
-    },
-    {
-      'name': 'Pharmacie Moderne',
-      'position': const LatLng(5.3250, -4.0300),
-      'icon': Icons.local_pharmacy,
-      'color': Colors.teal,
-    },
+    {'name': 'Restaurant Le Palmier', 'position': const LatLng(5.3364, -4.0267), 'icon': Icons.restaurant, 'color': Colors.red},
+    {'name': 'Hôtel Ivoire', 'position': const LatLng(5.3200, -4.0100), 'icon': Icons.hotel, 'color': Colors.blue},
+    {'name': 'Supermarché Hayat', 'position': const LatLng(5.3400, -4.0350), 'icon': Icons.store, 'color': Colors.green},
+    {'name': 'Café des Arts', 'position': const LatLng(5.3500, -4.0200), 'icon': Icons.local_cafe, 'color': Colors.brown},
+    {'name': 'Pharmacie Moderne', 'position': const LatLng(5.3250, -4.0300), 'icon': Icons.local_pharmacy, 'color': Colors.teal},
   ];
 
   @override
   void initState() {
     super.initState();
-    _getCurrentLocation();
+    _mapController = MapController();
+    _initializeApp();
   }
 
   @override
@@ -76,17 +54,65 @@ class _MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
+  // Initialisation de l'application
+  Future<void> _initializeApp() async {
+    await _getCurrentLocation();
+  }
+
+  // Callback appelé quand la carte est prête
+  void _onMapReady() {
+    setState(() {
+      isMapReady = true;
+    });
+    
+    // Maintenant que la carte est prête, on peut centrer sur la position
+    if (currentPosition != null) {
+      _moveToPosition(currentPosition!, 15.0);
+    }
+  }
+
+  // Méthode sécurisée pour déplacer la carte
+  void _moveToPosition(LatLng position, double zoom) {
+    if (!isMapReady || !mounted) return;
+    
+    try {
+      _mapController.move(position, zoom);
+    } catch (e) {
+      debugPrint('Erreur lors du déplacement de la carte: $e');
+    }
+  }
+
+  // Méthode sécurisée pour ajuster la vue sur la route
+  void _fitRouteToView() {
+    if (!isMapReady || !mounted || routePoints.isEmpty) return;
+
+    try {
+      final bounds = LatLngBounds.fromPoints(routePoints);
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: bounds,
+          padding: const EdgeInsets.all(50),
+          maxZoom: 16,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Erreur lors de l\'ajustement de la vue: $e');
+    }
+  }
+
   Future<void> _getCurrentLocation() async {
     try {
+      // Vérifier si les services de localisation sont activés
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         setState(() {
-          errorMessage = 'Services de localisation désactivés.';
+          errorMessage = 'Les services de localisation sont désactivés.';
           isLoading = false;
         });
         return;
       }
 
+      // Vérifier les permissions
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -99,107 +125,103 @@ class _MapScreenState extends State<MapScreen> {
         }
       }
 
-      Position position = await Geolocator.getCurrentPosition();
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          errorMessage = 'Permissions de localisation définitivement refusées.';
+          isLoading = false;
+        });
+        return;
+      }
+
+      // Obtenir la position actuelle
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+      
       setState(() {
         currentPosition = LatLng(position.latitude, position.longitude);
         isLoading = false;
       });
 
-      _mapController.move(currentPosition!, 15.0);
     } catch (e) {
       setState(() {
-        errorMessage = 'Erreur: $e';
+        errorMessage = 'Erreur lors de la localisation: $e';
         isLoading = false;
       });
     }
   }
 
-  // Utiliser l'API OpenRouteService pour obtenir un vrai trajet routier
+  // API OpenRouteService
   Future<Map<String, dynamic>> _getRealRoute(LatLng start, LatLng end) async {
     try {
-      // Utilisation de l'API OpenRouteService (gratuite)
-      // Remplacez 'YOUR_API_KEY' par une vraie clé API d'OpenRouteService
-      const String apiKey = '5b3ce3597851110001cf6248b9c6e4a8581b4893bb0c9b4705c5bbdd'; // Clé de démo
-      
-      final String url = 'https://api.openrouteservice.org/v2/directions/driving-car?'
-          'api_key=$apiKey'
-          '&start=${start.longitude},${start.latitude}'
-          '&end=${end.longitude},${end.latitude}';
-
-      print('Demande de routage: $url');
+      const String apiKey = '5b3ce3597851110001cf6248b9c6e4a8581b4893bb0c9b4705c5bbdd';
+      final String url =
+          'https://api.openrouteservice.org/v2/directions/driving-car?api_key=$apiKey&start=${start.longitude},${start.latitude}&end=${end.longitude},${end.latitude}';
 
       final response = await http.get(Uri.parse(url));
-      
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        
         if (data['features'] != null && data['features'].isNotEmpty) {
           final route = data['features'][0];
           final coordinates = route['geometry']['coordinates'] as List;
           final properties = route['properties'];
-          
-          // Convertir les coordonnées en LatLng
-          List<LatLng> points = coordinates.map<LatLng>((coord) => 
-            LatLng(coord[1].toDouble(), coord[0].toDouble())
-          ).toList();
-          
-          // Extraire les instructions de navigation
+
+          List<LatLng> points = coordinates
+              .map<LatLng>((coord) => LatLng(coord[1].toDouble(), coord[0].toDouble()))
+              .toList();
+
+          // Simplifier la route pour de meilleures performances
+          points = _simplifyRoute(points, 200);
+
           List<String> instructions = [];
           if (properties['segments'] != null && properties['segments'].isNotEmpty) {
             final steps = properties['segments'][0]['steps'] as List;
-            instructions = steps.map<String>((step) => 
-              step['instruction'].toString()
-            ).toList();
+            instructions = steps.map<String>((step) => step['instruction'].toString()).toList();
           }
-          
+
           return {
             'points': points,
-            'distance': properties['summary']['distance'].toDouble() / 1000, // en km
-            'duration': properties['summary']['duration'].toDouble() / 60, // en minutes
+            'distance': properties['summary']['distance'].toDouble() / 1000,
+            'duration': properties['summary']['duration'].toDouble() / 60,
             'instructions': instructions,
           };
         }
       }
-      
-      // Si l'API échoue, utiliser un trajet simple
+
       return _getFallbackRoute(start, end);
-      
     } catch (e) {
-      print('Erreur API: $e');
       return _getFallbackRoute(start, end);
     }
   }
 
-  // Trajet de secours si l'API ne fonctionne pas
   Map<String, dynamic> _getFallbackRoute(LatLng start, LatLng end) {
     List<LatLng> points = [];
-    
-    // Créer un trajet qui suit approximativement les routes principales
     double latDiff = end.latitude - start.latitude;
     double lngDiff = end.longitude - start.longitude;
-    
-    // Ajouter des points intermédiaires pour simuler un trajet routier
+
+    // Créer une route simple avec 20 points
     for (int i = 0; i <= 20; i++) {
       double progress = i / 20.0;
-      
-      // Ajouter une courbe pour simuler les routes
-      double curveFactor = 0.0001 * Math.sin(progress * 3.14159);
-      
+      double curveFactor = 0.0001 * Math.sin(progress * Math.pi);
       points.add(LatLng(
-        start.latitude + (latDiff * progress) + curveFactor,
-        start.longitude + (lngDiff * progress) + curveFactor,
+        start.latitude + latDiff * progress + curveFactor,
+        start.longitude + lngDiff * progress + curveFactor,
       ));
     }
-    
+
     double distance = Geolocator.distanceBetween(
-      start.latitude, start.longitude,
-      end.latitude, end.longitude,
+      start.latitude, 
+      start.longitude, 
+      end.latitude, 
+      end.longitude,
     ) / 1000;
-    
+
     return {
       'points': points,
       'distance': distance,
-      'duration': distance / 40 * 60, // 40 km/h moyenne en ville
+      'duration': distance / 40 * 60, // Vitesse moyenne de 40 km/h
       'instructions': [
         'Départ de votre position',
         'Continuez tout droit',
@@ -210,8 +232,17 @@ class _MapScreenState extends State<MapScreen> {
     };
   }
 
+  List<LatLng> _simplifyRoute(List<LatLng> points, int maxPoints) {
+    if (points.length <= maxPoints) return points;
+    double step = points.length / maxPoints;
+    return List.generate(maxPoints, (i) => points[(i * step).floor()]);
+  }
+
   Future<void> _startNavigation(Map<String, dynamic> establishment) async {
-    if (currentPosition == null) return;
+    if (currentPosition == null) {
+      _showMessage('Position actuelle non disponible');
+      return;
+    }
 
     setState(() {
       isLoading = true;
@@ -219,26 +250,25 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     try {
-      // Obtenir le vrai trajet routier
       Map<String, dynamic> routeData = await _getRealRoute(currentPosition!, destination!);
 
       setState(() {
         routePoints = routeData['points'];
-        isNavigating = true;
-        isLoading = false;
         distanceToDestination = routeData['distance'];
         estimatedTime = routeData['duration'];
         routeInstructions = List<String>.from(routeData['instructions']);
         currentInstructionIndex = 0;
+        isNavigating = true;
+        isLoading = false;
         navigationInfo = 'Navigation vers ${establishment['name']}';
       });
 
-      // Démarrer le suivi en temps réel
       _startRealTimeTracking();
       
-      // Ajuster la vue pour montrer tout le trajet
-      _fitRouteInView();
-      
+      // Attendre un peu avant d'ajuster la vue
+      await Future.delayed(const Duration(milliseconds: 500));
+      _fitRouteToView();
+
     } catch (e) {
       setState(() {
         errorMessage = 'Erreur lors du calcul du trajet: $e';
@@ -253,14 +283,12 @@ class _MapScreenState extends State<MapScreen> {
       distanceFilter: 10,
     );
 
-    positionStream = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen((Position position) {
+    positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) {
       LatLng newPosition = LatLng(position.latitude, position.longitude);
-      
+
       setState(() {
         currentPosition = newPosition;
-        
+
         if (destination != null) {
           double distance = Geolocator.distanceBetween(
             position.latitude,
@@ -269,10 +297,10 @@ class _MapScreenState extends State<MapScreen> {
             destination!.longitude,
           );
           distanceToDestination = distance / 1000;
-          
-          // Mettre à jour l'instruction actuelle en fonction de la position
+
           _updateCurrentInstruction(newPosition);
-          
+
+          // Arrivée à destination (50 mètres de tolérance)
           if (distance < 50) {
             _stopNavigation();
             _showArrivalDialog();
@@ -280,54 +308,38 @@ class _MapScreenState extends State<MapScreen> {
         }
       });
 
-      _mapController.move(newPosition, _mapController.camera.zoom);
+      // Déplacer la carte vers la nouvelle position
+      _moveToPosition(newPosition, isMapReady ? _mapController.camera.zoom : 15.0);
     });
   }
 
   void _updateCurrentInstruction(LatLng position) {
     if (routePoints.isEmpty || routeInstructions.isEmpty) return;
     
-    // Trouver le point le plus proche sur le trajet
-    double minDistance = double.infinity;
-    int closestPointIndex = 0;
-    
-    for (int i = 0; i < routePoints.length; i++) {
-      double distance = Geolocator.distanceBetween(
-        position.latitude, position.longitude,
-        routePoints[i].latitude, routePoints[i].longitude,
-      );
-      
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestPointIndex = i;
-      }
-    }
-    
-    // Mettre à jour l'index de l'instruction en fonction de la progression
-    int newInstructionIndex = (closestPointIndex / routePoints.length * routeInstructions.length).floor();
+    int closestPointIndex = _findClosestPointIndex(position, routePoints);
+    int newInstructionIndex = ((closestPointIndex / routePoints.length) * routeInstructions.length).floor();
     newInstructionIndex = newInstructionIndex.clamp(0, routeInstructions.length - 1);
-    
+
     if (newInstructionIndex != currentInstructionIndex) {
-      setState(() {
-        currentInstructionIndex = newInstructionIndex;
-      });
+      setState(() => currentInstructionIndex = newInstructionIndex);
     }
   }
 
-  void _fitRouteInView() {
-    if (routePoints.isEmpty) return;
-    
-    double minLat = routePoints.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
-    double maxLat = routePoints.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
-    double minLng = routePoints.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
-    double maxLng = routePoints.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-    
-    LatLngBounds bounds = LatLngBounds(
-      LatLng(minLat, minLng),
-      LatLng(maxLat, maxLng),
-    );
-    
-    _mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)));
+  int _findClosestPointIndex(LatLng position, List<LatLng> points) {
+    int closestIndex = 0;
+    double minDistSquared = double.infinity;
+
+    for (int i = 0; i < points.length; i++) {
+      double dx = position.latitude - points[i].latitude;
+      double dy = position.longitude - points[i].longitude;
+      double distSquared = dx * dx + dy * dy;
+      if (distSquared < minDistSquared) {
+        minDistSquared = distSquared;
+        closestIndex = i;
+      }
+    }
+
+    return closestIndex;
   }
 
   void _stopNavigation() {
@@ -346,7 +358,6 @@ class _MapScreenState extends State<MapScreen> {
 
   void _showArrivalDialog() {
     if (!mounted) return;
-    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -362,25 +373,111 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _centerOnCurrentPosition() {
+    if (currentPosition != null && isMapReady) {
+      _moveToPosition(currentPosition!, 15.0);
+    } else {
+      _showMessage('Position non disponible');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Écran de chargement
+    if (isLoading) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Chargement de la carte...',
+                style: TextStyle(fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Écran d'erreur
+    if (errorMessage != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 80, color: Colors.red),
+                const SizedBox(height: 24),
+                Text(
+                  'Erreur',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  errorMessage!,
+                  style: const TextStyle(fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      errorMessage = null;
+                      isLoading = true;
+                    });
+                    _initializeApp();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Réessayer'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Position par défaut si pas de position actuelle
+    final initialCenter = currentPosition ?? const LatLng(5.3364, -4.0267);
+
     return Scaffold(
-     
       body: Stack(
         children: [
+          // Carte
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: currentPosition ?? const LatLng(5.3364, -4.0267),
+              initialCenter: initialCenter,
               initialZoom: 15.0,
+              minZoom: 10.0,
+              maxZoom: 18.0,
+              onMapReady: _onMapReady, // Callback important
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all,
+              ),
             ),
             children: [
+              // Tuiles de carte
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.onsortx',
+                userAgentPackageName: 'com.example.mapapp',
               ),
-              
-              // Afficher le trajet routier
+
+              // Route de navigation
               if (routePoints.isNotEmpty)
                 PolylineLayer(
                   polylines: [
@@ -393,273 +490,270 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ],
                 ),
-              
+
+              // Marqueurs
               MarkerLayer(
                 markers: [
-                  // Position actuelle avec direction
+                  // Position actuelle
                   if (currentPosition != null)
                     Marker(
                       point: currentPosition!,
-                      width: 80,
-                      height: 80,
+                      width: 50,
+                      height: 50,
+                      alignment: Alignment.center,
                       child: Container(
                         decoration: BoxDecoration(
-                          color: isNavigating ? Colors.orange.withOpacity(0.3) : Colors.blue.withOpacity(0.3),
+                          color: Colors.blue,
                           shape: BoxShape.circle,
-                          border: Border.all(
-                            color: isNavigating ? Colors.orange : Colors.blue, 
-                            width: 3
-                          ),
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
                         ),
-                        child: Icon(
-                          isNavigating ? Icons.navigation : Icons.my_location,
-                          color: isNavigating ? Colors.orange : Colors.blue,
-                          size: 30,
+                        child: const Icon(
+                          Icons.navigation,
+                          color: Colors.white,
+                          size: 24,
                         ),
                       ),
                     ),
-
-                  // Établissements
-                  ...establishments.map((establishment) => Marker(
-                    point: establishment['position'],
-                    width: 60,
-                    height: 80,
-                    child: GestureDetector(
-                      onTap: () => _showEstablishmentDialog(establishment),
-                      child: Column(
-                        children: [
-                          Container(
-                            decoration: BoxDecoration(
-                              color: establishment['color'],
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.3),
-                                  blurRadius: 5,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              establishment['icon'],
-                              color: Colors.white,
-                              size: 25,
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              establishment['name'].split(' ')[0],
-                              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )).toList(),
 
                   // Destination
                   if (destination != null)
                     Marker(
                       point: destination!,
-                      width: 60,
-                      height: 60,
-                      child: const Icon(
-                        Icons.location_on,
-                        color: Colors.red,
-                        size: 50,
+                      width: 50,
+                      height: 50,
+                      alignment: Alignment.center,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.place,
+                          color: Colors.white,
+                          size: 24,
+                        ),
                       ),
                     ),
+
+                  // Établissements
+                  ...establishments.map(
+                    (establishment) => Marker(
+                      point: establishment['position'] as LatLng,
+                      width: 120,
+                      height: 70,
+                      alignment: Alignment.center,
+                      child: GestureDetector(
+                        onTap: () => _startNavigation(establishment),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: establishment['color'] as Color,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.3),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                establishment['icon'] as IconData,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                establishment['name'] as String,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ],
           ),
 
-          // Informations de navigation
-          if (navigationInfo != null)
+          // Interface de navigation
+          if (isNavigating && navigationInfo != null)
             Positioned(
-              top: 10,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding: const EdgeInsets.all(15),
-                decoration: BoxDecoration(
-                  color: Colors.orange,
-                  borderRadius: BorderRadius.circular(15),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 10,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+              top: MediaQuery.of(context).padding.top + 10,
+              left: 16,
+              right: 16,
+              child: Card(
+                elevation: 12,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.navigation, color: Colors.white),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            navigationInfo!,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (distanceToDestination != null && estimatedTime != null)
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // En-tête
                       Row(
                         children: [
-                          Icon(Icons.straighten, color: Colors.white, size: 16),
-                          const SizedBox(width: 5),
-                          Text(
-                            '${distanceToDestination!.toStringAsFixed(1)} km',
-                            style: const TextStyle(color: Colors.white),
+                          const Icon(Icons.navigation, color: Colors.blue),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              navigationInfo!,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
                           ),
-                          const SizedBox(width: 20),
-                          Icon(Icons.schedule, color: Colors.white, size: 16),
-                          const SizedBox(width: 5),
-                          Text(
-                            '${estimatedTime!.toInt()} min',
-                            style: const TextStyle(color: Colors.white),
+                          IconButton(
+                            onPressed: _stopNavigation,
+                            icon: const Icon(Icons.close, color: Colors.red),
+                            tooltip: 'Arrêter la navigation',
                           ),
                         ],
                       ),
-                    if (routeInstructions.isNotEmpty && currentInstructionIndex < routeInstructions.length)
-                      Container(
-                        margin: const EdgeInsets.only(top: 10),
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(
+
+                      // Informations de distance et temps
+                      if (distanceToDestination != null && estimatedTime != null) ...[
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
                           children: [
-                            const Icon(Icons.turn_right, color: Colors.white),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                routeInstructions[currentInstructionIndex],
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                              ),
+                            _buildInfoChip(
+                              Icons.straighten,
+                              '${distanceToDestination!.toStringAsFixed(1)} km',
+                              Colors.green,
+                            ),
+                            _buildInfoChip(
+                              Icons.access_time,
+                              '${estimatedTime!.toStringAsFixed(0)} min',
+                              Colors.orange,
                             ),
                           ],
                         ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
+                      ],
 
-          // Indicateur de chargement
-          if (isLoading)
-            Container(
-              color: Colors.black.withOpacity(0.3),
-              child: const Center(child: CircularProgressIndicator()),
-            ),
-
-          // Message d'erreur
-          if (errorMessage != null && !isLoading)
-            Positioned(
-              bottom: 100,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Text(
-                  errorMessage!,
-                  style: const TextStyle(color: Colors.white),
-                  textAlign: TextAlign.center,
+                      // Instruction actuelle
+                      if (routeInstructions.isNotEmpty && 
+                          currentInstructionIndex < routeInstructions.length) ...[
+                        const Divider(),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.turn_right,
+                                color: Colors.blue,
+                                size: 24,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  routeInstructions[currentInstructionIndex],
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.blue[800],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ),
             ),
         ],
       ),
-      floatingActionButton: currentPosition != null && !isNavigating
-          ? FloatingActionButton(
-              onPressed: () => _mapController.move(currentPosition!, 15.0),
-              backgroundColor: Colors.blue,
-              child: const Icon(Icons.my_location, color: Colors.white),
-            )
-          : null,
+
+      // Boutons flottants
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Centrer sur position
+          FloatingActionButton(
+            heroTag: "center",
+            mini: true,
+            onPressed: _centerOnCurrentPosition,
+            tooltip: 'Centrer sur ma position',
+            child: const Icon(Icons.my_location),
+          ),
+          const SizedBox(height: 8),
+
+          // Arrêter navigation
+          if (isNavigating)
+            FloatingActionButton(
+              heroTag: "stop",
+              mini: true,
+              backgroundColor: Colors.red,
+              onPressed: _stopNavigation,
+              tooltip: 'Arrêter la navigation',
+              child: const Icon(Icons.stop, color: Colors.white),
+            ),
+        ],
+      ),
     );
   }
 
-  void _showEstablishmentDialog(Map<String, dynamic> establishment) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(establishment['icon'], color: establishment['color']),
-            const SizedBox(width: 10),
-            Expanded(child: Text(establishment['name'])),
-          ],
-        ),
-        content: currentPosition != null 
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('📍 ${establishment['position'].latitude.toStringAsFixed(4)}, ${establishment['position'].longitude.toStringAsFixed(4)}'),
-                const SizedBox(height: 10),
-                if (currentPosition != null)
-                  Text('🚗 Distance: ${(Geolocator.distanceBetween(
-                    currentPosition!.latitude, 
-                    currentPosition!.longitude,
-                    establishment['position'].latitude, 
-                    establishment['position'].longitude
-                  ) / 1000).toStringAsFixed(1)} km'),
-                const SizedBox(height: 10),
-                const Text(
-                  '🛣️ Trajet calculé sur les vraies routes',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: Colors.green,
-                  ),
-                ),
-              ],
-            )
-          : const Text('Activez la localisation pour voir les informations'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Fermer'),
-          ),
-          if (currentPosition != null)
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                _startNavigation(establishment);
-              },
-              icon: const Icon(Icons.navigation),
-              label: const Text('Navigation GPS'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
-              ),
+  Widget _buildInfoChip(IconData icon, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: color,
             ),
+          ),
         ],
       ),
     );
   }
 }
-
-// Extension pour les calculs mathématiques
